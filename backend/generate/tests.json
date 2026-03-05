@@ -1,0 +1,24 @@
+{
+  "tests": [
+    {
+      "name": "OPTIONS preflight",
+      "method": "OPTIONS",
+      "path": "/",
+      "expectedStatus": 200
+    },
+    {
+      "name": "Генерация проекта по промпту",
+      "method": "POST",
+      "path": "/",
+      "body": { "prompt": "Сделай простую страницу с кнопкой Hello World" },
+      "expectedStatus": 200
+    },
+    {
+      "name": "Ошибка без промпта",
+      "method": "POST",
+      "path": "/",
+      "body": { "prompt": "" },
+      "expectedStatus": 400
+    }
+  ]
+}

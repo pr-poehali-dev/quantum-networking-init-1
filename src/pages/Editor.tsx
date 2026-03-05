@@ -7,6 +7,7 @@ import python from "highlight.js/lib/languages/python";
 import xml from "highlight.js/lib/languages/xml";
 import css from "highlight.js/lib/languages/css";
 import "highlight.js/styles/atom-one-dark.css";
+import func2url from "../../backend/func2url.json";
 
 hljs.registerLanguage("typescript", typescript);
 hljs.registerLanguage("python", python);
@@ -15,153 +16,46 @@ hljs.registerLanguage("css", css);
 
 type FileNode = {
   name: string;
+  path: string;
   type: "file" | "folder";
   lang?: string;
   children?: FileNode[];
   content?: string;
 };
 
-const FILES: FileNode[] = [
+type ChatMessage = {
+  role: "user" | "assistant";
+  text: string;
+};
+
+type GeneratedFile = {
+  path: string;
+  content: string;
+  language: string;
+};
+
+const INITIAL_FILES: FileNode[] = [
   {
     name: "src",
+    path: "src",
     type: "folder",
     children: [
       {
         name: "App.tsx",
+        path: "src/App.tsx",
         type: "file",
         lang: "typescript",
-        content: `import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Index from "./pages/Index";
-import Editor from "./pages/Editor";
-
-const App = () => (
-  <BrowserRouter>
-    <Routes>
-      <Route path="/" element={<Index />} />
-      <Route path="/editor" element={<Editor />} />
-    </Routes>
-  </BrowserRouter>
-);
-
-export default App;`,
-      },
-      {
-        name: "pages",
-        type: "folder",
-        children: [
-          {
-            name: "Index.tsx",
-            type: "file",
-            lang: "typescript",
-            content: `import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Sparkles } from "lucide-react";
-
-const Index = () => {
-  const [prompt, setPrompt] = useState("");
-
-  const handleGenerate = async () => {
-    // Отправляем промпт в CodeGenius AI
-    const response = await fetch("/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
-    });
-    const data = await response.json();
-    console.log(data);
-  };
-
-  return (
-    <div className="min-h-screen bg-[#36393f]">
-      <h1 className="text-white text-2xl font-bold p-8">
-        CodeGenius AI
-      </h1>
-      <div className="px-8">
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Опиши свой проект..."
-          className="w-full h-32 bg-[#40444b] text-white rounded-lg p-4"
-        />
-        <Button onClick={handleGenerate} className="mt-4 bg-[#5865f2]">
-          <Sparkles className="w-4 h-4 mr-2" />
-          Сгенерировать
-        </Button>
-      </div>
-    </div>
-  );
-};
-
-export default Index;`,
-          },
-        ],
-      },
-    ],
-  },
-  {
-    name: "backend",
-    type: "folder",
-    children: [
-      {
-        name: "generate",
-        type: "folder",
-        children: [
-          {
-            name: "index.py",
-            type: "file",
-            lang: "python",
-            content: `import os
-import json
-
-
-def handler(event: dict, context) -> dict:
-    """Генерирует структуру проекта через ИИ по промпту пользователя."""
-    if event.get("httpMethod") == "OPTIONS":
-        return {
-            "statusCode": 200,
-            "headers": {
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type",
-            },
-            "body": "",
-        }
-
-    body = json.loads(event.get("body", "{}"))
-    prompt = body.get("prompt", "")
-
-    if not prompt:
-        return {
-            "statusCode": 400,
-            "headers": {"Access-Control-Allow-Origin": "*"},
-            "body": json.dumps({"error": "Промпт не указан"}),
-        }
-
-    # Здесь подключается ИИ для генерации кода
-    api_key = os.environ.get("OPENAI_API_KEY")
-
-    result = {
-        "status": "success",
-        "files_created": ["src/App.tsx", "backend/api/index.py"],
-        "message": f"Проект создан по промпту: {prompt[:50]}...",
-    }
-
-    return {
-        "statusCode": 200,
-        "headers": {"Access-Control-Allow-Origin": "*"},
-        "body": json.dumps(result),
-    }`,
-          },
-        ],
+        content: `// Здесь появятся сгенерированные файлы
+// Опиши проект в чате справа →`,
       },
     ],
   },
 ];
 
-const MESSAGES = [
+const INITIAL_MESSAGES: ChatMessage[] = [
   {
     role: "assistant",
-    text: "Привет! Я CodeGenius AI. Опиши что хочешь создать — я напишу React фронтенд + Python бэкенд и сразу добавлю файлы в проект.",
+    text: "Привет! Я CodeGenius AI. Опиши что хочешь создать — я напишу React фронтенд + Python бэкенд и покажу все файлы здесь.",
   },
 ];
 
@@ -171,47 +65,104 @@ const getIcon = (name: string, type: "file" | "folder", open?: boolean) => {
   if (name.endsWith(".py")) return "FileCode2";
   if (name.endsWith(".css")) return "Paintbrush";
   if (name.endsWith(".json")) return "Braces";
+  if (name.endsWith(".txt") || name.endsWith(".md")) return "FileText";
   return "File";
 };
+
+const getLangColor = (lang?: string) => {
+  if (lang === "typescript") return "text-[#89b4fa]";
+  if (lang === "python") return "text-[#f9e2af]";
+  if (lang === "css") return "text-[#cba6f7]";
+  return "text-[#a6e3a1]";
+};
+
+function buildFileTree(files: GeneratedFile[]): FileNode[] {
+  const root: FileNode[] = [];
+
+  files.forEach((file) => {
+    const parts = file.path.split("/");
+    let current = root;
+
+    parts.forEach((part, i) => {
+      const isLast = i === parts.length - 1;
+      const existing = current.find((n) => n.name === part);
+
+      if (isLast) {
+        if (!existing) {
+          current.push({
+            name: part,
+            path: file.path,
+            type: "file",
+            lang: file.language,
+            content: file.content,
+          });
+        }
+      } else {
+        if (existing && existing.type === "folder") {
+          current = existing.children!;
+        } else {
+          const folder: FileNode = {
+            name: part,
+            path: parts.slice(0, i + 1).join("/"),
+            type: "folder",
+            children: [],
+          };
+          current.push(folder);
+          current = folder.children!;
+        }
+      }
+    });
+  });
+
+  return root;
+}
 
 const FileTree = ({
   nodes,
   depth = 0,
   onSelect,
-  selected,
+  selectedPath,
 }: {
   nodes: FileNode[];
   depth?: number;
   onSelect: (node: FileNode) => void;
-  selected: string;
+  selectedPath: string;
 }) => {
-  const [open, setOpen] = useState<Record<string, boolean>>({ src: true, backend: true, pages: true, generate: true });
+  const initOpen: Record<string, boolean> = {};
+  nodes.forEach((n) => { if (n.type === "folder") initOpen[n.path] = true; });
+  const [open, setOpen] = useState<Record<string, boolean>>(initOpen);
+
+  useEffect(() => {
+    const newOpen: Record<string, boolean> = {};
+    nodes.forEach((n) => { if (n.type === "folder") newOpen[n.path] = true; });
+    setOpen(newOpen);
+  }, [nodes.length]);
 
   return (
     <>
       {nodes.map((node) => (
-        <div key={node.name}>
+        <div key={node.path}>
           <div
-            className={`flex items-center gap-1.5 px-2 py-[3px] rounded cursor-pointer text-sm select-none
-              ${node.type === "file" && selected === node.name
+            className={`flex items-center gap-1.5 py-[3px] rounded cursor-pointer text-sm select-none
+              ${node.type === "file" && selectedPath === node.path
                 ? "bg-[#3c3f44] text-white"
                 : "text-[#cdd6f4] hover:bg-[#2e3035] hover:text-white"
               }`}
-            style={{ paddingLeft: `${depth * 12 + 8}px` }}
+            style={{ paddingLeft: `${depth * 12 + 8}px`, paddingRight: "8px" }}
             onClick={() => {
-              if (node.type === "folder") setOpen((p) => ({ ...p, [node.name]: !p[node.name] }));
+              if (node.type === "folder") setOpen((p) => ({ ...p, [node.path]: !p[node.path] }));
               else onSelect(node);
             }}
           >
             <Icon
-              name={getIcon(node.name, node.type, open[node.name])}
+              name={getIcon(node.name, node.type, open[node.path])}
               size={14}
-              className={node.type === "folder" ? "text-[#89b4fa]" : "text-[#a6e3a1]"}
+              className={node.type === "folder" ? "text-[#89b4fa]" : getLangColor(node.lang)}
             />
-            <span>{node.name}</span>
+            <span className="truncate">{node.name}</span>
           </div>
-          {node.type === "folder" && open[node.name] && node.children && (
-            <FileTree nodes={node.children} depth={depth + 1} onSelect={onSelect} selected={selected} />
+          {node.type === "folder" && open[node.path] && node.children && (
+            <FileTree nodes={node.children} depth={depth + 1} onSelect={onSelect} selectedPath={selectedPath} />
           )}
         </div>
       ))}
@@ -238,37 +189,74 @@ const CodeBlock = ({ code, lang }: { code: string; lang: string }) => {
 };
 
 export default function Editor() {
-  const [selectedFile, setSelectedFile] = useState<FileNode>(
-    FILES[0].children![0] as FileNode
-  );
-  const [messages, setMessages] = useState(MESSAGES);
+  const [fileTree, setFileTree] = useState<FileNode[]>(INITIAL_FILES);
+  const [selectedFile, setSelectedFile] = useState<FileNode>(INITIAL_FILES[0].children![0]);
+  const [messages, setMessages] = useState<ChatMessage[]>(INITIAL_MESSAGES);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"code" | "preview">("code");
+  const [statusText, setStatusText] = useState("Готов к генерации");
+  const [instructions, setInstructions] = useState("");
   const chatRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (chatRef.current) {
       chatRef.current.scrollTop = chatRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, loading]);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
+
     const userMsg = input.trim();
     setInput("");
     setMessages((p) => [...p, { role: "user", text: userMsg }]);
     setLoading(true);
+    setStatusText("ИИ генерирует код...");
 
-    await new Promise((r) => setTimeout(r, 1200));
+    const history = messages.map((m) => ({ role: m.role, content: m.text }));
+
+    const response = await fetch(func2url.generate, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: userMsg, history }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || data.error) {
+      setMessages((p) => [...p, { role: "assistant", text: `Ошибка: ${data.error ?? "Что-то пошло не так"}` }]);
+      setStatusText("Ошибка генерации");
+      setLoading(false);
+      return;
+    }
+
+    const generated: GeneratedFile[] = data.files ?? [];
+    const newTree = buildFileTree(generated);
+    setFileTree(newTree);
+
+    if (generated.length > 0) {
+      const firstFile = generated[0];
+      setSelectedFile({
+        name: firstFile.path.split("/").pop()!,
+        path: firstFile.path,
+        type: "file",
+        lang: firstFile.language,
+        content: firstFile.content,
+      });
+    }
+
+    if (data.instructions) {
+      setInstructions(data.instructions);
+    }
 
     setMessages((p) => [
       ...p,
       {
         role: "assistant",
-        text: `Понял! Генерирую проект по запросу «${userMsg}». Создаю файлы структуры React + Python...`,
+        text: `${data.description ?? "Готово!"} Создано файлов: ${generated.length}. ${data.instructions ? "Смотри инструкции ниже 👇" : ""}`,
       },
     ]);
+    setStatusText(`Сгенерировано ${generated.length} файлов`);
     setLoading(false);
   };
 
@@ -286,14 +274,14 @@ export default function Editor() {
           </div>
         </div>
 
-        <div className="px-2 py-2 border-b border-[#313244]">
+        <div className="px-2 py-2 flex-1 overflow-y-auto">
           <div className="flex items-center gap-1 px-1 mb-1">
             <span className="text-[#6c7086] text-[10px] uppercase tracking-widest font-semibold">Проводник</span>
           </div>
-          <FileTree nodes={FILES} onSelect={setSelectedFile} selected={selectedFile?.name ?? ""} />
+          <FileTree nodes={fileTree} onSelect={setSelectedFile} selectedPath={selectedFile?.path ?? ""} />
         </div>
 
-        <div className="mt-auto border-t border-[#313244] px-2 py-2 space-y-0.5">
+        <div className="border-t border-[#313244] px-2 py-2 space-y-0.5">
           {[
             { icon: "Settings", label: "Настройки" },
             { icon: "FolderOpen", label: "Открыть папку" },
@@ -311,71 +299,54 @@ export default function Editor() {
 
       {/* Центр — редактор кода */}
       <div className="flex-1 flex flex-col min-w-0 border-r border-[#313244]">
-        {/* Табы файлов */}
-        <div className="flex items-center bg-[#181825] border-b border-[#313244] h-9 overflow-x-auto">
+        {/* Табы */}
+        <div className="flex items-center bg-[#181825] border-b border-[#313244] h-9 overflow-x-auto flex-shrink-0">
           {selectedFile && (
             <div className="flex items-center gap-2 px-4 h-full bg-[#1e1e2e] border-r border-[#313244] text-[#cdd6f4] text-xs border-t border-t-[#5865f2]">
-              <Icon name="FileCode" size={12} className="text-[#a6e3a1]" />
-              <span>{selectedFile.name}</span>
-              <button className="text-[#6c7086] hover:text-[#cdd6f4] ml-1">
-                <Icon name="X" size={10} />
-              </button>
+              <Icon name={getIcon(selectedFile.name, "file")} size={12} className={getLangColor(selectedFile.lang)} />
+              <span className="max-w-[160px] truncate">{selectedFile.path}</span>
             </div>
           )}
-          <div className="ml-auto flex items-center gap-1 px-3">
-            <button
-              className={`text-xs px-3 py-1 rounded ${activeTab === "code" ? "bg-[#313244] text-white" : "text-[#6c7086] hover:text-white"}`}
-              onClick={() => setActiveTab("code")}
-            >
-              Код
-            </button>
-            <button
-              className={`text-xs px-3 py-1 rounded ${activeTab === "preview" ? "bg-[#313244] text-white" : "text-[#6c7086] hover:text-white"}`}
-              onClick={() => setActiveTab("preview")}
-            >
-              Превью
-            </button>
+        </div>
+
+        {/* Код */}
+        <div className="flex-1 overflow-hidden">
+          <div className="h-full flex">
+            <div className="w-10 flex-shrink-0 bg-[#1e1e2e] pt-4 select-none overflow-hidden">
+              {(selectedFile?.content ?? "").split("\n").map((_, i) => (
+                <div key={i} className="text-right pr-3 text-[#45475a] text-[12px] leading-relaxed">
+                  {i + 1}
+                </div>
+              ))}
+            </div>
+            <div className="flex-1 overflow-auto">
+              {selectedFile?.content && (
+                <CodeBlock code={selectedFile.content} lang={selectedFile.lang ?? "typescript"} />
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Контент */}
-        <div className="flex-1 overflow-hidden">
-          {activeTab === "code" ? (
-            <div className="h-full flex">
-              {/* Номера строк */}
-              <div className="w-10 flex-shrink-0 bg-[#1e1e2e] pt-4 select-none">
-                {(selectedFile?.content ?? "").split("\n").map((_, i) => (
-                  <div key={i} className="text-right pr-3 text-[#45475a] text-[12px] leading-relaxed">
-                    {i + 1}
-                  </div>
-                ))}
-              </div>
-              {/* Код с подсветкой */}
-              <div className="flex-1 overflow-auto">
-                {selectedFile?.content && (
-                  <CodeBlock code={selectedFile.content} lang={selectedFile.lang ?? "typescript"} />
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="h-full flex items-center justify-center bg-[#1e1e2e]">
-              <div className="text-center text-[#6c7086]">
-                <Icon name="Monitor" size={40} className="mx-auto mb-3 opacity-30" />
-                <p className="text-sm">Превью появится после генерации проекта</p>
-              </div>
-            </div>
-          )}
-        </div>
+        {/* Инструкции после генерации */}
+        {instructions && (
+          <div className="bg-[#1e2030] border-t border-[#313244] px-4 py-2 text-[12px] text-[#a6e3a1] flex items-start gap-2 max-h-20 overflow-y-auto">
+            <Icon name="Info" size={13} className="flex-shrink-0 mt-0.5 text-[#89b4fa]" />
+            <span>{instructions}</span>
+          </div>
+        )}
 
         {/* Статус бар */}
-        <div className="h-6 bg-[#5865f2] flex items-center px-4 gap-4 text-white text-[11px]">
+        <div className="h-6 bg-[#5865f2] flex items-center px-4 gap-4 text-white text-[11px] flex-shrink-0">
           <div className="flex items-center gap-1.5">
             <Icon name="GitBranch" size={11} />
             <span>main</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <Icon name="CheckCircle" size={11} />
-            <span>Готов к генерации</span>
+            {loading
+              ? <Icon name="Loader" size={11} className="animate-spin" />
+              : <Icon name="CheckCircle" size={11} />
+            }
+            <span>{statusText}</span>
           </div>
           <div className="ml-auto flex items-center gap-4">
             <span>{selectedFile?.lang?.toUpperCase() ?? "TSX"}</span>
@@ -384,9 +355,8 @@ export default function Editor() {
         </div>
       </div>
 
-      {/* Правая панель — чат с ИИ */}
+      {/* Правая панель — чат */}
       <div className="w-80 flex-shrink-0 flex flex-col bg-[#181825]">
-        {/* Заголовок чата */}
         <div className="px-4 py-3 border-b border-[#313244] flex items-center gap-2">
           <div className="w-7 h-7 bg-[#5865f2] rounded-full flex items-center justify-center">
             <Icon name="Sparkles" size={13} className="text-white" />
@@ -394,16 +364,25 @@ export default function Editor() {
           <div>
             <div className="text-[#cdd6f4] text-sm font-semibold">CodeGenius AI</div>
             <div className="flex items-center gap-1">
-              <div className="w-1.5 h-1.5 bg-[#a6e3a1] rounded-full"></div>
-              <span className="text-[#a6e3a1] text-[10px]">онлайн</span>
+              <div className={`w-1.5 h-1.5 rounded-full ${loading ? "bg-[#f9e2af] animate-pulse" : "bg-[#a6e3a1]"}`}></div>
+              <span className={`text-[10px] ${loading ? "text-[#f9e2af]" : "text-[#a6e3a1]"}`}>
+                {loading ? "генерирует..." : "онлайн"}
+              </span>
             </div>
           </div>
-          <div className="ml-auto flex gap-1">
-            <Button variant="ghost" size="sm" className="w-7 h-7 p-0 text-[#6c7086] hover:text-white hover:bg-[#313244]">
+          <div className="ml-auto">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-7 h-7 p-0 text-[#6c7086] hover:text-white hover:bg-[#313244]"
+              onClick={() => {
+                setMessages(INITIAL_MESSAGES);
+                setFileTree(INITIAL_FILES);
+                setInstructions("");
+                setStatusText("Готов к генерации");
+              }}
+            >
               <Icon name="RotateCcw" size={12} />
-            </Button>
-            <Button variant="ghost" size="sm" className="w-7 h-7 p-0 text-[#6c7086] hover:text-white hover:bg-[#313244]">
-              <Icon name="Settings" size={12} />
             </Button>
           </div>
         </div>
@@ -419,7 +398,7 @@ export default function Editor() {
                 {msg.role === "assistant" ? <Icon name="Sparkles" size={11} className="text-white" /> : "Я"}
               </div>
               <div
-                className={`max-w-[85%] rounded-xl px-3 py-2 text-[13px] leading-relaxed
+                className={`max-w-[85%] rounded-xl px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap
                   ${msg.role === "assistant"
                     ? "bg-[#2e3035] text-[#cdd6f4] rounded-tl-none"
                     : "bg-[#5865f2] text-white rounded-tr-none"
@@ -448,7 +427,7 @@ export default function Editor() {
 
         {/* Быстрые промпты */}
         <div className="px-3 py-2 border-t border-[#313244] flex gap-1.5 flex-wrap">
-          {["CRM система", "Лендинг", "API бэкенд"].map((p) => (
+          {["CRM система", "Лендинг", "ToDo приложение", "API бэкенд"].map((p) => (
             <button
               key={p}
               onClick={() => setInput(p)}
@@ -459,7 +438,7 @@ export default function Editor() {
           ))}
         </div>
 
-        {/* Поле ввода */}
+        {/* Ввод */}
         <div className="p-3 border-t border-[#313244]">
           <div className="flex gap-2 bg-[#2e3035] rounded-xl px-3 py-2 border border-[#313244] focus-within:border-[#5865f2] transition-colors">
             <textarea
